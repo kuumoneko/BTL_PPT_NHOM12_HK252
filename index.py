@@ -9,104 +9,95 @@ import gc
 # ==========================================
 @njit
 def thomas_algorithm(a, b, c, d):
-    """
-    Giải hệ phương trình ma trận 3 đường chéo bằng thuật toán Thomas (O(N)).
-    - a: mảng đường chéo dưới (kích thước n-1)
-    - b: mảng đường chéo chính (kích thước n)
-    - c: mảng đường chéo trên (kích thước n-1)
-    - d: mảng vế phải (kích thước n)
-    """
     n = len(d)
     c_prime = np.zeros(n-1, dtype=np.float64)
     d_prime = np.zeros(n, dtype=np.float64)
     x = np.zeros(n, dtype=np.float64)
-
     if n == 1:
         x[0] = d[0] / b[0]
         return x
-
     # Bước 1: Khử tiến (Forward sweep)
     c_prime[0] = c[0] / b[0]
     d_prime[0] = d[0] / b[0]
-
     for i in range(1, n-1):
         m = b[i] - a[i-1] * c_prime[i-1]
         c_prime[i] = c[i] / m
         d_prime[i] = (d[i] - a[i-1] * d_prime[i-1]) / m
-
     m = b[n-1] - a[n-2] * c_prime[n-2]
     d_prime[n-1] = (d[n-1] - a[n-2] * d_prime[n-2]) / m
-
     # Bước 2: Thế ngược (Back substitution)
     x[n-1] = d_prime[n-1]
     for i in range(n-2, -1, -1):
         x[i] = d_prime[i] - c_prime[i] * x[i+1]
-
     return x
 
 # ==========================================
 # 2. HÀM GIẢI FDM TÍCH HỢP THOMAS
 # ==========================================
-def solve_fdm_thomas(L_val, N, g_func_num, u_exact_func_num):
+def fdm_thomas(L_val, N, g_func_num, u_exact_func_num):
     x_num = np.linspace(0, L_val, N)
     h = L_val / (N - 1)
-    
     g_discrete = g_func_num(x_num)
     if np.isscalar(g_discrete):
         g_discrete = np.full_like(x_num, g_discrete)
-
     num_interior = N - 2
     d = g_discrete[1:-1] * (h**2)
-    
-    # Chỉ cần tạo 3 mảng 1D thay vì tạo Ma trận
-    b = np.full(num_interior, -2.0)     # Đường chéo chính
-    a = np.full(num_interior - 1, 1.0)  # Đường chéo dưới
-    c = np.full(num_interior - 1, 1.0)  # Đường chéo trên
-    
-    # Giải bằng giải thuật Thomas
+    b = np.full(num_interior, -2.0)
+    a = np.full(num_interior - 1, 1.0)
+    c = np.full(num_interior - 1, 1.0)
     u_interior = thomas_algorithm(a, b, c, d)
-    
     # Ghép điều kiện biên u(0) = 0, u(L) = 0
     u_fdm = np.zeros(N)
     u_fdm[1:-1] = u_interior
-    
     # Tính sai số L2
     u_exact_vals = u_exact_func_num(x_num)
     l2_error = np.sqrt(h * np.sum((u_fdm - u_exact_vals)**2))
-    
     return x_num, u_fdm, u_exact_vals, l2_error, g_discrete
 
+    
 # ==========================================
 # 3. THIẾT LẬP BÀI TOÁN & GIẢI TÍCH (CHỈ CHẠY 1 LẦN)
-# ==========================================
-L = 10.0      
-N_single = 51        
+# ==========================================    
 x = sp.Symbol('x')
 g_input = input("Nhập hàm g(x) (ví dụ: exp(x), x**2, sin(x)): ")
-g = sp.exp(x)
+L = float(input("Nhập chiều dài thanh sắt L: "))
+N_single = int(input("Nhập số nút rời rạc hóa N: "))
 
 try:
     g = sp.sympify(g_input)
-    # print(f"Hàm g(x) đã nhận: {g}")
+    # Kiểm tra nếu g vẫn là Equality sau khi sympify (trường hợp hiếm)
+    if isinstance(g, sp.Equality):
+        g = g.rhs # Lấy vế phải của phương trình
+    print(f"Hàm g(x) đã nhận: {g}")
 except Exception as e:
     print(f"Lỗi: Hàm nhập vào không hợp lệ! Chi tiết: {e}")
     exit()
 
 print("Đang giải phương trình giải tích bằng SymPy...")
-u_sym = sp.Function('u')
-ode = sp.Eq(u_sym(x).diff(x, x), g)
-sol_gen = sp.dsolve(ode, u_sym(x))
-constants = sp.solve([sol_gen.rhs.subs(x, 0), sol_gen.rhs.subs(x, L)])
-sol_exact_expr = sol_gen.rhs.subs(constants)
+# Tích phân lần 1: u'(x) = integral(g) + C1
+C1, C2 = sp.symbols('C1 C2')
+du = sp.integrate(g, x) + C1
 
+# Tích phân lần 2: u(x) = integral(u'(x)) + C2
+sol_exact_expr_gen = sp.integrate(du, x) + C2
+
+# Giải hệ phương trình tìm hằng số từ điều kiện biên u(0)=0 và u(L)=0
+constants = sp.solve([
+    sol_exact_expr_gen.subs(x, 0), 
+    sol_exact_expr_gen.subs(x, L)
+], (C1, C2))
+
+# Thế hằng số vào để có nghiệm cuối cùng
+sol_exact_expr = sol_exact_expr_gen.subs(constants)
 g_func_num = sp.lambdify(x, g, "numpy")
-u_exact_func_num = sp.lambdify(x, sol_exact_expr, "numpy")
+u_exact_func_num = sp.lambdify(x, sol_exact_expr, "numpy")    
+    
 print("Hoàn tất thiết lập!\n")
 
 # ==========================================
 # 4. IN BẢNG GIÁ TRỊ VÀ SAI SỐ CHO N=51
 # ==========================================
-x_vals, u_fdm_vals, u_exact_vals, l2_err, g_vals = solve_fdm_thomas(L, N_single, g_func_num, u_exact_func_num)
+x_vals, u_fdm_vals, u_exact_vals, l2_err, g_vals = fdm_thomas(L, N_single, g_func_num, u_exact_func_num)
 
 print("--- THÔNG TIN BÀI TOÁN ---")
 print(f"Chiều dài L = {L}, Số nút N = {N_single}")
@@ -142,7 +133,7 @@ err_list = []
 
 for n_nodes in N_list:
     print(n_nodes)
-    _, _, _, err, _ = solve_fdm_thomas(L, n_nodes, g_func_num, u_exact_func_num)
+    _, _, _, err, _ = fdm_thomas(L, n_nodes, g_func_num, u_exact_func_num)
     h = L / (n_nodes - 1)
     h_list.append(h)
     err_list.append(err)
